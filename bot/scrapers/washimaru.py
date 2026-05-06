@@ -5,6 +5,7 @@ from typing import Iterable
 from bs4 import BeautifulSoup
 
 from .base import Scraper, ScholarshipItem
+from .tagging import extract_tags
 
 
 _DEADLINE_RE = re.compile(
@@ -60,20 +61,62 @@ class Washimaru(Scraper):
             if not title:
                 continue
 
-            deadline_text = ""
-            for li in box.select("li"):
-                t = li.get_text(strip=True)
-                if "締め切り" in t or "締切" in t:
-                    deadline_text = t
-                    break
+            fields = self._parse_box_fields(box)
 
+            target_raw = fields.get("target")
+            deadline_text = fields.get("deadline_text", "")
+            # 「上旬/中旬/下旬」表記の場合は原文を deadline_note に残す
+            note = None
+            if deadline_text and re.search(r"上旬|中旬|下旬", deadline_text):
+                note = deadline_text.replace("締め切り：", "").replace("締切：", "").strip()
+            # /minkankyufu-m/ は修士向けキュレーションなので、タグに修士が無ければ補う
+            tags = extract_tags(target_raw)
+            if tags and "修士" not in tags:
+                tags = "修士 / " + tags
+            elif not tags:
+                tags = "修士"
             yield ScholarshipItem(
                 external_id=url,
                 title=title,
                 url=url,
                 deadline=_parse_deadline(deadline_text),
+                deadline_note=note,
                 region=self.region,
+                amount=fields.get("amount"),
+                target=tags,
+                scholarship_type="給付型",  # /minkankyufu-m/ は給付型限定のページ
             )
+
+    def enrich(self, item: ScholarshipItem) -> ScholarshipItem:
+        """個別pickupページから公式財団URLを取得。"""
+        try:
+            resp = self.get(item.url)
+        except Exception:
+            return item
+        soup = BeautifulSoup(resp.text, "lxml")
+        for a in soup.select("article a[href]"):
+            href = a.get("href", "")
+            text = a.get_text(strip=True)
+            if not href.startswith("http") or "washimaru" in href:
+                continue
+            if "公式" in text or "財団HP" in text or "公式HP" in text:
+                item.official_url = href
+                break
+        return item
+
+    @staticmethod
+    def _parse_box_fields(box) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for li in box.select("li"):
+            text = li.get_text(strip=True)
+            if "締め切り" in text or "締切" in text:
+                result["deadline_text"] = text
+            elif text.startswith("受給月額") or text.startswith("受給額"):
+                result["amount"] = text.split("：", 1)[-1].strip() if "：" in text else text
+            elif text.startswith("応募可能学年") or text.startswith("学部制限"):
+                val = text.split("：", 1)[-1].strip() if "：" in text else text
+                result["target"] = (result.get("target", "") + " / " + val).strip(" /")
+        return result
 
     @staticmethod
     def _find_title(box) -> str:

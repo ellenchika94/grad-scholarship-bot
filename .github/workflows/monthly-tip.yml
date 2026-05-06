@@ -1,0 +1,30 @@
+name: monthly-seasonal-tip
+
+on:
+  schedule:
+    # 毎月1日 0:00 UTC = 9:00 JST
+    - cron: '0 0 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Post seasonal tip
+        env:
+          DISCORD_WEBHOOK_DOMESTIC: ${{ secrets.DISCORD_WEBHOOK_DOMESTIC }}
+          CONTACT_EMAIL: ${{ secrets.CONTACT_EMAIL }}
+        run: python -m bot.seasonal_main

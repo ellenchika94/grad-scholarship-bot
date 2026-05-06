@@ -6,13 +6,29 @@ import traceback
 
 from . import config, db, discord_post
 from .scrapers import ALL_SCRAPERS
+from .scrapers.relevance import has_seasonal_window_within, is_master_relevant
+
+
+def _mark_existing_notified(conn, source_id: str, external_id: str) -> None:
+    row = conn.execute(
+        "SELECT id FROM scholarships WHERE source = ? AND external_id = ?",
+        (source_id, external_id),
+    ).fetchone()
+    if row:
+        db.mark_notified(conn, row[0])
 
 
 def _row_to_item(row) -> dict:
+    keys = row.keys()
     return {
         "title": row["title"],
         "url": row["url"],
+        "official_url": row["official_url"] if "official_url" in keys else None,
         "deadline": row["deadline"],
+        "deadline_note": row["deadline_note"] if "deadline_note" in keys else None,
+        "amount": row["amount"] if "amount" in keys else None,
+        "target": row["target"] if "target" in keys else None,
+        "scholarship_type": row["scholarship_type"] if "scholarship_type" in keys else None,
         "source_label": _label_for_source(row["source"]),
     }
 
@@ -36,7 +52,15 @@ def collect_new(conn) -> dict[str, int]:
             continue
         new_count = 0
         for item in items:
-            inserted = db.upsert_scholarship(
+            # 既知ならenrichをスキップ（個別ページfetchを回避）
+            if db.is_known(conn, scraper.source_id, item.external_id):
+                continue
+            try:
+                item = scraper.enrich(item)
+            except Exception:
+                print(f"[warn] enrich failed for {scraper.source_id}/{item.external_id}", file=sys.stderr)
+                traceback.print_exc()
+            db.upsert_scholarship(
                 conn,
                 source=scraper.source_id,
                 external_id=item.external_id,
@@ -44,9 +68,26 @@ def collect_new(conn) -> dict[str, int]:
                 url=item.url,
                 deadline=item.deadline,
                 region=item.region,
+                deadline_note=item.deadline_note,
+                amount=item.amount,
+                target=item.target,
+                scholarship_type=item.scholarship_type,
+                official_url=item.official_url,
             )
-            if inserted:
-                new_count += 1
+            # 修士向け以外（博士のみ等）はDBには保存するが通知済み扱いにして
+            # 二度と通知しない（enrich結果のキャッシュは活かす）
+            if not is_master_relevant(item.target):
+                _mark_existing_notified(conn, scraper.source_id, item.external_id)
+                print(f"  [skip:not-master] {item.title[:40]}")
+                continue
+            # XPLANEのように deadline=None で例年情報のみのケースは
+            # deadline_noteから月を抜き出して3ヶ月以内に到来する分だけ通知対象に
+            if item.deadline is None and item.deadline_note:
+                if not has_seasonal_window_within(item.deadline_note, 90):
+                    _mark_existing_notified(conn, scraper.source_id, item.external_id)
+                    print(f"  [skip:>3mo] {item.title[:40]}")
+                    continue
+            new_count += 1
         counts[scraper.source_id] = new_count
         print(f"[ok] {scraper.source_id}: fetched={len(items)} new={new_count}")
     return counts
@@ -88,11 +129,26 @@ def notify_upcoming(conn, exclude_ids: dict[str, set[int]]) -> None:
             traceback.print_exc()
 
 
+def post_umeko_for_active_regions(notified_ids: dict[str, set[int]], conn) -> None:
+    """このrunで何か投稿があったregionにだけ、うめこのひとこと送る。"""
+    for region in ("domestic", "overseas"):
+        had_new = bool(notified_ids.get(region))
+        # upcomingがあった場合も送りたいので、そのチェックも兼ねる
+        had_upcoming = bool(db.fetch_upcoming(conn, region, config.UPCOMING_DAYS, notified_ids.get(region)))
+        if had_new or had_upcoming:
+            try:
+                discord_post.post_umeko(region)
+            except Exception:
+                print(f"[error] post_umeko region={region} failed:", file=sys.stderr)
+                traceback.print_exc()
+
+
 def main() -> int:
     with db.connect() as conn:
         counts = collect_new(conn)
         notified_ids = notify_new(conn)
         notify_upcoming(conn, notified_ids)
+        post_umeko_for_active_regions(notified_ids, conn)
     summary = ", ".join(f"{k}={v}" for k, v in counts.items())
     print(f"[summary] new items per source: {summary}")
     return 0

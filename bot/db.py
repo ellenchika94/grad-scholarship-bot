@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS scholarships (
     title TEXT NOT NULL,
     url TEXT NOT NULL,
     deadline DATE,
+    deadline_note TEXT,
     region TEXT NOT NULL CHECK(region IN ('domestic','overseas')),
     first_seen_at TEXT NOT NULL,
     notified_new INTEGER NOT NULL DEFAULT 0,
@@ -23,6 +24,22 @@ CREATE TABLE IF NOT EXISTS scholarships (
 CREATE INDEX IF NOT EXISTS idx_scholarships_deadline ON scholarships(deadline);
 """
 
+_MIGRATIONS = [
+    "ALTER TABLE scholarships ADD COLUMN deadline_note TEXT",
+    "ALTER TABLE scholarships ADD COLUMN amount TEXT",
+    "ALTER TABLE scholarships ADD COLUMN target TEXT",
+    "ALTER TABLE scholarships ADD COLUMN scholarship_type TEXT",
+    "ALTER TABLE scholarships ADD COLUMN official_url TEXT",
+]
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    for stmt in _MIGRATIONS:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass
+
 
 @contextmanager
 def connect() -> Iterator[sqlite3.Connection]:
@@ -31,10 +48,19 @@ def connect() -> Iterator[sqlite3.Connection]:
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(SCHEMA)
+        _apply_migrations(conn)
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+def is_known(conn: sqlite3.Connection, source: str, external_id: str) -> bool:
+    cur = conn.execute(
+        "SELECT 1 FROM scholarships WHERE source = ? AND external_id = ?",
+        (source, external_id),
+    )
+    return cur.fetchone() is not None
 
 
 def upsert_scholarship(
@@ -45,20 +71,26 @@ def upsert_scholarship(
     url: str,
     deadline: date | None,
     region: str,
+    deadline_note: str | None = None,
+    amount: str | None = None,
+    target: str | None = None,
+    scholarship_type: str | None = None,
+    official_url: str | None = None,
 ) -> bool:
     """Insert if new. Returns True when newly inserted."""
-    cur = conn.execute(
-        "SELECT id FROM scholarships WHERE source = ? AND external_id = ?",
-        (source, external_id),
-    )
-    if cur.fetchone():
+    if is_known(conn, source, external_id):
         return False
     conn.execute(
         """
-        INSERT INTO scholarships (source, external_id, title, url, deadline, region, first_seen_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO scholarships (
+            source, external_id, title, url, deadline, deadline_note,
+            amount, target, scholarship_type, official_url, region, first_seen_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (source, external_id, title, url, deadline, region, datetime.utcnow().isoformat()),
+        (source, external_id, title, url, deadline, deadline_note,
+         amount, target, scholarship_type, official_url, region,
+         datetime.utcnow().isoformat()),
     )
     return True
 
