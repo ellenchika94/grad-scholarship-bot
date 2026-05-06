@@ -6,10 +6,12 @@ import requests
 from . import config
 
 
-def _format_deadline(deadline: date | None) -> str:
-    if deadline is None:
+def _format_deadline(deadline) -> str:
+    if not deadline:
         return "締切：要確認（リンク先参照）"
-    return f"締切：{deadline.strftime('%Y-%m-%d')}"
+    if isinstance(deadline, date):
+        return f"締切：{deadline.strftime('%Y-%m-%d')}"
+    return f"締切：{deadline}"
 
 
 def _send(webhook_url: str, embeds: list[dict]) -> None:
