@@ -52,7 +52,9 @@ def collect_new(conn) -> dict[str, int]:
     return counts
 
 
-def notify_new(conn) -> None:
+def notify_new(conn) -> dict[str, set[int]]:
+    """新着通知。各regionで通知したIDのsetを返す（締切間近セクションでの除外用）。"""
+    notified_ids: dict[str, set[int]] = {"domestic": set(), "overseas": set()}
     for region in ("domestic", "overseas"):
         rows = db.fetch_unnotified(conn, region)
         if not rows:
@@ -62,34 +64,35 @@ def notify_new(conn) -> None:
             discord_post.post_new(region, items)
             for r in rows:
                 db.mark_notified(conn, r["id"])
+                notified_ids[region].add(r["id"])
             print(f"[ok] notified region={region} count={len(rows)}")
         except Exception:
             print(f"[error] notify_new region={region} failed:", file=sys.stderr)
             traceback.print_exc()
+    return notified_ids
 
 
-def notify_reminders(conn) -> None:
-    for days in config.REMINDER_DAYS:
-        for region in ("domestic", "overseas"):
-            rows = db.fetch_due_for_reminder(conn, days, region)
-            if not rows:
-                continue
-            items = [_row_to_item(r) for r in rows]
-            try:
-                discord_post.post_reminders(region, items, days)
-                for r in rows:
-                    db.mark_reminder_sent(conn, r["id"], days)
-                print(f"[ok] reminder {days}d region={region} count={len(rows)}")
-            except Exception:
-                print(f"[error] reminder {days}d region={region} failed:", file=sys.stderr)
-                traceback.print_exc()
+def notify_upcoming(conn, exclude_ids: dict[str, set[int]]) -> None:
+    """締切間近（2週間以内）の奨学金を毎回通知。新着で出したものは除外。"""
+    days = config.UPCOMING_DAYS
+    for region in ("domestic", "overseas"):
+        rows = db.fetch_upcoming(conn, region, days, exclude_ids.get(region))
+        if not rows:
+            continue
+        items = [_row_to_item(r) for r in rows]
+        try:
+            discord_post.post_upcoming(region, items, days)
+            print(f"[ok] upcoming {days}d region={region} count={len(rows)}")
+        except Exception:
+            print(f"[error] upcoming region={region} failed:", file=sys.stderr)
+            traceback.print_exc()
 
 
 def main() -> int:
     with db.connect() as conn:
         counts = collect_new(conn)
-        notify_new(conn)
-        notify_reminders(conn)
+        notified_ids = notify_new(conn)
+        notify_upcoming(conn, notified_ids)
     summary = ", ".join(f"{k}={v}" for k, v in counts.items())
     print(f"[summary] new items per source: {summary}")
     return 0

@@ -92,28 +92,31 @@ def mark_notified(conn: sqlite3.Connection, scholarship_id: int) -> None:
     )
 
 
-def fetch_due_for_reminder(
-    conn: sqlite3.Connection, days_ahead: int, region: str
+def fetch_upcoming(
+    conn: sqlite3.Connection,
+    region: str,
+    days: int,
+    exclude_ids: set[int] | None = None,
 ) -> list[sqlite3.Row]:
-    column = "reminder_7_sent" if days_ahead == 7 else "reminder_3_sent"
-    return list(
+    """締切が今日〜N日後にある奨学金を取得（締切間近リマインダ用）。
+
+    既通知/新規通知に関わらず、締切が窓に入っているものを毎回返す。
+    `exclude_ids` には「同じ実行回で新着として通知済」のIDを渡し、
+    新着セクションと締切間近セクションでの二重表示を防ぐ。
+    """
+    rows = list(
         conn.execute(
             f"""
             SELECT * FROM scholarships
             WHERE region = ?
               AND deadline IS NOT NULL
-              AND {column} = 0
-              AND date(deadline) = date('now', '+{days_ahead} days')
+              AND date(deadline) >= date('now')
+              AND date(deadline) <= date('now', '+{days} days')
+            ORDER BY date(deadline), id
             """,
             (region,),
         )
     )
-
-
-def mark_reminder_sent(
-    conn: sqlite3.Connection, scholarship_id: int, days_ahead: int
-) -> None:
-    column = "reminder_7_sent" if days_ahead == 7 else "reminder_3_sent"
-    conn.execute(
-        f"UPDATE scholarships SET {column} = 1 WHERE id = ?", (scholarship_id,)
-    )
+    if exclude_ids:
+        rows = [r for r in rows if r["id"] not in exclude_ids]
+    return rows

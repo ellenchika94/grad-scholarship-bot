@@ -50,20 +50,27 @@ def post_new(region: str, items: list[dict]) -> None:
     _send(webhook, embeds)
 
 
-def post_reminders(region: str, items: list[dict], days_ahead: int) -> None:
+def post_upcoming(region: str, items: list[dict], days: int) -> None:
+    """締切間近セクション。今日〜N日後に締切のものを毎回掲載。"""
     if not items:
         return
     webhook = config.WEBHOOK_DOMESTIC if region == "domestic" else config.WEBHOOK_OVERSEAS
-    embeds = [
+    label = "国内" if region == "domestic" else "海外"
+    header_embed = {
+        "title": f"⏰ 締切間近（{days}日以内）",
+        "description": f"{label}チャンネルで締切が近づいている奨学金一覧",
+        "color": 0xFF9800,
+    }
+    item_embeds = [
         {
-            "title": f"[締切{days_ahead}日前] {item['title']}",
+            "title": item["title"],
             "url": item["url"],
             "description": (
                 f"{_format_deadline(item.get('deadline'))}\n"
                 f"出典：{item['source_label']}"
             ),
-            "color": 0xFF9800 if days_ahead == 7 else 0xF44336,
+            "color": 0xF44336,
         }
         for item in items
     ]
-    _send(webhook, embeds)
+    _send(webhook, [header_embed, *item_embeds])
