@@ -64,9 +64,23 @@ def upsert_scholarship(
 
 
 def fetch_unnotified(conn: sqlite3.Connection, region: str) -> list[sqlite3.Row]:
+    """未通知のうち、締切が今日から3ヶ月以内 or 締切不明のものを返す。
+
+    締切がそれより先のものは、後の実行で3ヶ月窓に入ったら通知される。
+    """
     return list(
         conn.execute(
-            "SELECT * FROM scholarships WHERE notified_new = 0 AND region = ? ORDER BY id",
+            """
+            SELECT * FROM scholarships
+            WHERE notified_new = 0
+              AND region = ?
+              AND (
+                deadline IS NULL
+                OR (date(deadline) >= date('now')
+                    AND date(deadline) <= date('now', '+3 months'))
+              )
+            ORDER BY COALESCE(deadline, '9999-12-31'), id
+            """,
             (region,),
         )
     )
