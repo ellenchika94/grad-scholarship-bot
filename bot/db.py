@@ -1,0 +1,105 @@
+import sqlite3
+from contextlib import contextmanager
+from datetime import date, datetime
+from typing import Iterator
+
+from . import config
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS scholarships (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    url TEXT NOT NULL,
+    deadline DATE,
+    region TEXT NOT NULL CHECK(region IN ('domestic','overseas')),
+    first_seen_at TEXT NOT NULL,
+    notified_new INTEGER NOT NULL DEFAULT 0,
+    reminder_7_sent INTEGER NOT NULL DEFAULT 0,
+    reminder_3_sent INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(source, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_scholarships_deadline ON scholarships(deadline);
+"""
+
+
+@contextmanager
+def connect() -> Iterator[sqlite3.Connection]:
+    config.DATA_DIR.mkdir(exist_ok=True)
+    conn = sqlite3.connect(config.DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.executescript(SCHEMA)
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def upsert_scholarship(
+    conn: sqlite3.Connection,
+    source: str,
+    external_id: str,
+    title: str,
+    url: str,
+    deadline: date | None,
+    region: str,
+) -> bool:
+    """Insert if new. Returns True when newly inserted."""
+    cur = conn.execute(
+        "SELECT id FROM scholarships WHERE source = ? AND external_id = ?",
+        (source, external_id),
+    )
+    if cur.fetchone():
+        return False
+    conn.execute(
+        """
+        INSERT INTO scholarships (source, external_id, title, url, deadline, region, first_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (source, external_id, title, url, deadline, region, datetime.utcnow().isoformat()),
+    )
+    return True
+
+
+def fetch_unnotified(conn: sqlite3.Connection, region: str) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            "SELECT * FROM scholarships WHERE notified_new = 0 AND region = ? ORDER BY id",
+            (region,),
+        )
+    )
+
+
+def mark_notified(conn: sqlite3.Connection, scholarship_id: int) -> None:
+    conn.execute(
+        "UPDATE scholarships SET notified_new = 1 WHERE id = ?", (scholarship_id,)
+    )
+
+
+def fetch_due_for_reminder(
+    conn: sqlite3.Connection, days_ahead: int, region: str
+) -> list[sqlite3.Row]:
+    column = "reminder_7_sent" if days_ahead == 7 else "reminder_3_sent"
+    return list(
+        conn.execute(
+            f"""
+            SELECT * FROM scholarships
+            WHERE region = ?
+              AND deadline IS NOT NULL
+              AND {column} = 0
+              AND date(deadline) = date('now', '+{days_ahead} days')
+            """,
+            (region,),
+        )
+    )
+
+
+def mark_reminder_sent(
+    conn: sqlite3.Connection, scholarship_id: int, days_ahead: int
+) -> None:
+    column = "reminder_7_sent" if days_ahead == 7 else "reminder_3_sent"
+    conn.execute(
+        f"UPDATE scholarships SET {column} = 1 WHERE id = ?", (scholarship_id,)
+    )

@@ -1,0 +1,54 @@
+name: biweekly-run
+
+on:
+  schedule:
+    # 隔週月曜 0:00 UTC = 9:00 JST。GitHub Actions cron は隔週指定が無いので
+    # 「毎月1日と15日の最も近い月曜の朝」を擬似的に。実装側で当日チェック。
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Skip unless biweekly Monday (1-7 or 15-21)
+        id: gate
+        run: |
+          DAY=$(date -u +%d)
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> $GITHUB_OUTPUT
+          elif [ "$DAY" -le 7 ] || { [ "$DAY" -ge 15 ] && [ "$DAY" -le 21 ]; }; then
+            echo "run=true" >> $GITHUB_OUTPUT
+          else
+            echo "run=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run bot
+        if: steps.gate.outputs.run == 'true'
+        env:
+          DISCORD_WEBHOOK_DOMESTIC: ${{ secrets.DISCORD_WEBHOOK_DOMESTIC }}
+          DISCORD_WEBHOOK_OVERSEAS: ${{ secrets.DISCORD_WEBHOOK_OVERSEAS }}
+          CONTACT_EMAIL: ${{ secrets.CONTACT_EMAIL }}
+        run: python -m bot.main
+
+      - name: Commit DB updates
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          git config user.name "grad-scholarship-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add data/scholarships.db
+          git diff --cached --quiet || git commit -m "chore: update scholarships DB"
+          git push
