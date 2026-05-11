@@ -23,8 +23,14 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
-      - name: Post seasonal tip
+      - name: Post seasonal tip (domestic)
         env:
           DISCORD_WEBHOOK_DOMESTIC: ${{ secrets.DISCORD_WEBHOOK_DOMESTIC }}
           CONTACT_EMAIL: ${{ secrets.CONTACT_EMAIL }}
         run: python -m bot.seasonal_main
+
+      - name: Post seasonal tip (overseas)
+        env:
+          DISCORD_WEBHOOK_OVERSEAS: ${{ secrets.DISCORD_WEBHOOK_OVERSEAS }}
+          CONTACT_EMAIL: ${{ secrets.CONTACT_EMAIL }}
+        run: python -m bot.seasonal_main_overseas
